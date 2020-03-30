@@ -1,26 +1,29 @@
-const express = require("express");
+const request = require('request');
+const express = require('express');
 const app = express();
-const jwt = require("jsonwebtoken");
 
 const {
   mongoose
-} = require("./db/mongoose");
+} = require('./db/mongoose');
 
-const bodyParser = require("body-parser");
+const bodyParser = require('body-parser');
 
-/**
- * Load in the Mongoose models
- **/
+// Load in the mongoose models
 const {
   List,
   Task,
-  User
-} = require("./db/models");
+  User,
+  IpAddress
+} = require('./db/models');
+
+const jwt = require('jsonwebtoken');
 
 
-/* MIDDLEWARE */
-// load middleware
+/* MIDDLEWARE  */
+
+// Load middleware
 app.use(bodyParser.json());
+
 
 // CORS HEADERS MIDDLEWARE
 app.use(function (req, res, next) {
@@ -41,15 +44,11 @@ app.use(function (req, res, next) {
 let authenticate = (req, res, next) => {
   let token = req.header('x-access-token');
 
-  console.log('token', token);
-  console.log('User.getJWTSecret()', User.getJWTSecret());
-  // return;
   // verify the JWT
   jwt.verify(token, User.getJWTSecret(), (err, decoded) => {
     if (err) {
       // there was an error
       // jwt is invalid - * DO NOT AUTHENTICATE *
-      // console.log('error', err);
       res.status(401).send(err);
     } else {
       // jwt is valid
@@ -59,11 +58,11 @@ let authenticate = (req, res, next) => {
   });
 }
 
-
-// Verify Refresh Token Middleware (to verify the session)
+// Verify Refresh Token Middleware (which will be verifying the session)
 let verifySession = (req, res, next) => {
   // grab the refresh token from the request header
   let refreshToken = req.header('x-refresh-token');
+
   // grab the _id from the request header
   let _id = req.header('_id');
 
@@ -76,8 +75,9 @@ let verifySession = (req, res, next) => {
     }
 
 
-    // if the code reaches here - the user was found and the refresh token is in the database 
-    // But we still have to check if it has expired or not
+    // if the code reaches here - the user was found
+    // therefore the refresh token exists in the database - but we still have to check if it has expired or not
+
     req.user_id = user._id;
     req.userObject = user;
     req.refreshToken = refreshToken;
@@ -86,7 +86,6 @@ let verifySession = (req, res, next) => {
 
     user.sessions.forEach((session) => {
       if (session.token === refreshToken) {
-        console.log('refresh token expired?', User.hasRefreshTokenExpired(session.expiresAt));
         // check if the session has expired
         if (User.hasRefreshTokenExpired(session.expiresAt) === false) {
           // refresh token has not expired
@@ -106,33 +105,39 @@ let verifySession = (req, res, next) => {
     }
 
   }).catch((e) => {
+    console.log('e from verifySession', e);
     res.status(401).send(e);
   })
 }
+
+
+let verifyIp = (req, res, next) => {
+  let newIp = String(req.connection.remoteAddress);
+  IpAddress.needsVerification(newIp).then(needsVerification => {
+    req.needsVerification = needsVerification;
+    next();
+  }).catch(err => {
+    console.log('err from verifyIp', err);
+    res.status(400).send(err);
+  });
+
+};
 
 /* END MIDDLEWARE  */
 
 
 
-/**
- * Route Handlers
- **/
 
-app.get("/", (req, res) => {
-  res.send("Some Response on /");
-});
+/* ROUTE HANDLERS */
 
-
-
-// List Routes
+/* LIST ROUTES */
 
 /**
  * GET /lists
  * Purpose: Get all lists
  */
-app.get("/lists", authenticate, (req, res) => {
-  console.log('get lists', req);
-  // We want to return an array of all the lists that belong to the authenticated user
+app.get('/lists', authenticate, (req, res) => {
+  // We want to return an array of all the lists that belong to the authenticated user 
   List.find({
     _userId: req.user_id
   }).then((lists) => {
@@ -140,15 +145,15 @@ app.get("/lists", authenticate, (req, res) => {
   }).catch((e) => {
     res.send(e);
   });
-});
+})
 
 /**
  * POST /lists
  * Purpose: Create a list
  */
-app.post("/lists", authenticate, (req, res) => {
-  // Create a new list in the database and return a response back including it's 'id' to the user
-  // The list data will be passed in the JSON request's body
+app.post('/lists', authenticate, (req, res) => {
+  // We want to create a new list and return the new list document back to the user (which includes the id)
+  // The list information (fields) will be passed in via the JSON request body
   let title = req.body.title;
 
   let newList = new List({
@@ -156,20 +161,18 @@ app.post("/lists", authenticate, (req, res) => {
     _userId: req.user_id
   });
 
-  newList.save().then(listDoc => {
-    // return the list document created (including id)
+  newList.save().then((listDoc) => {
+    // the full list document is returned (incl. id)
     res.send(listDoc);
-  }).catch(e => {
-    res.status(400).send(e);
-  });
+  })
 });
 
 /**
  * PATCH /lists/:id
- * Purpose: Update a specific list
+ * Purpose: Update a specified list
  */
-app.patch("/lists/:id", authenticate, (req, res) => {
-  // Update a specific list (id specified in the URL) with the new values sent through the JSON body of the request
+app.patch('/lists/:id', authenticate, (req, res) => {
+  // We want to update the specified list (list document with id in the URL) with the new values specified in the JSON body of the request
   List.findOneAndUpdate({
     _id: req.params.id,
     _userId: req.user_id
@@ -184,33 +187,27 @@ app.patch("/lists/:id", authenticate, (req, res) => {
 
 /**
  * DELETE /lists/:id
- * Purpose: Delete a specific list
+ * Purpose: Delete a list
  */
-app.delete("/lists/:id", authenticate, (req, res) => {
-  // Delete a specific list (id specified in the URL)
+app.delete('/lists/:id', authenticate, (req, res) => {
+  // We want to delete the specified list (document with id in the URL)
   List.findOneAndRemove({
     _id: req.params.id,
     _userId: req.user_id
-  }).then(removedListDoc => {
-    res.send({
-      'message': 'removed successfully',
-      removedListDoc
-    });
+  }).then((removedListDoc) => {
+    res.send(removedListDoc);
 
     // delete all the tasks that are in the deleted list
     deleteTasksFromList(removedListDoc._id);
-  });
+  })
 });
 
-
-// Task Routes
 
 /**
  * GET /lists/:listId/tasks
  * Purpose: Get all tasks in a specific list
  */
 app.get('/lists/:listId/tasks', authenticate, (req, res) => {
-  console.log('get tasks', req);
   // We want to return all tasks that belong to a specific list (specified by listId)
   Task.find({
     _listId: req.params.listId
@@ -247,11 +244,11 @@ app.post('/lists/:listId/tasks', authenticate, (req, res) => {
       });
       newTask.save().then((newTaskDoc) => {
         res.send(newTaskDoc);
-      });
+      })
     } else {
       res.sendStatus(404);
     }
-  });
+  })
 })
 
 /**
@@ -326,74 +323,138 @@ app.delete('/lists/:listId/tasks/:taskId', authenticate, (req, res) => {
 });
 
 
+
 /* USER ROUTES */
 
 /**
- * POST /users/signup
- * Purpose: Sign Up
+ * POST /users
+ * Purpose: Sign up
  */
+app.post('/users', verifyIp, (req, res) => {
+  console.log('request body', req.body);
+  // User sign up
+  if (req.needsVerification) {
+    console.log('**needs verification');
+    if (!req.body.sitekey) {
+      console.log('but no captcha**');
+      res.status(400).send({
+        "message": 'captcha not checked',
+        'captcha': true
+      });
 
-app.post('/users/signup', (req, res) => {
-  let body = req.body;
-  let newUser = new User(body);
+    } else {
+      console.log('captcha provided ', req.body.sitekey);
+      verifyCaptcha(req).then(result => {
+        if (result.success) {
+          console.log('**verified with captcha**');
+          signup();
+        }
+      }).catch(e => {
+        console.log('captcha verification failed', e);
+        reject(e);
+      });
 
-  newUser.save().then(() => newUser.createSession()).then(refreshToken => {
-    // session created successfully and refreshToken retrieved.
-    return newUser.generateAccessAuthToken().then(accessToken => {
+    }
+
+  } else {
+    signup();
+  }
+
+
+  let signup = () => {
+    const body = req.body;
+    const newUser = new User(body);
+
+    // Now we construct and send the response to the user with their auth tokens in the header and the user object in the body
+    saveNewUser(newUser).then(authTokens => {
+      res.header('x-refresh-token', authTokens.refreshToken)
+        .header('x-access-token', authTokens.accessToken)
+        .send(newUser);
+    }).catch(e => {
+      res.status(400).send(e);
+    });
+  }
+
+});
+
+let verifyCaptcha = req => {
+  return new Promise((resolve, reject) => {
+    console.log('remoteAddress', req.connection.remoteAddress);
+
+    const secretKey = '6Lf1C-UUAAAAAGm8csTzZzdi68kzKQYitfAt7CDk';
+    const verifyUrl = `https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${req.body.sitekey}&remoteip=${req.connection.remoteAddress}`;
+
+    // send the request to google api
+    request(verifyUrl, (err, res, verification) => {
+      // if verification fails send back an error response
+      if (!verification.success && undefined !== verification.success) {
+        reject({
+          "error": 'captcha verification failed',
+          'captcha': true
+        });
+      }
+
+      // if verification succeeds 
+      resolve({
+        "success": true
+      });
+    });
+
+  });
+}
+
+let saveNewUser = newUser => {
+  return newUser.save().then(() => {
+    return newUser.createSession();
+  }).then((refreshToken) => {
+    // Session created successfully - refreshToken returned.
+    // now we geneate an access auth token for the user
+    return newUser.generateAccessAuthToken().then((accessToken) => {
       // access auth token generated successfully, now we return an object containing the auth tokens
       return {
         accessToken,
         refreshToken
       }
     });
+  }).catch((e) => {
+    Promise.reject(e);
+  })
+}
 
-  }).then(authTokens => {
-    // Now send the response back to the user with the tokens in the header and the user object in the body
-    res
-      .header('x-refresh-token', authTokens.refreshToken)
-      .header('x-access-token', authTokens.accessToken)
-      .send(newUser);
-  }).catch(e => {
-    res.status(400).send(e);
-  });
 
-});
 
 
 /**
  * POST /users/login
- * Purpose: Log In
+ * Purpose: Login
  */
-
 app.post('/users/login', (req, res) => {
   let email = req.body.email;
   let password = req.body.password;
 
-  User.findByCredentials(email, password).then(user => {
-    return user.createSession()
-      .then(refreshToken => {
-        // session created successfully and refreshToken retrieved.
-        // access auth token generated successfully, now we return an object containing the auth tokens
-        return user.generateAccessAuthToken().then(accessToken => {
-          return {
-            accessToken,
-            refreshToken
-          }
-        })
-      }).then(authTokens => {
-        // Now send the response back to the user with the tokens in the header and the user object in the body
-        res
-          .header('x-refresh-token', authTokens.refreshToken)
-          .header('x-access-token', authTokens.accessToken)
-          .send(user);
-      });
+  User.findByCredentials(email, password).then((user) => {
+    return user.createSession().then((refreshToken) => {
+      // Session created successfully - refreshToken returned.
+      // now we geneate an access auth token for the user
 
-  }).catch(e => {
-    console.log('error', e);
+      return user.generateAccessAuthToken().then((accessToken) => {
+        // access auth token generated successfully, now we return an object containing the auth tokens
+        return {
+          accessToken,
+          refreshToken
+        }
+      });
+    }).then((authTokens) => {
+      // Now we construct and send the response to the user with their auth tokens in the header and the user object in the body
+      res
+        .header('x-refresh-token', authTokens.refreshToken)
+        .header('x-access-token', authTokens.accessToken)
+        .send(user);
+    })
+  }).catch((e) => {
     res.status(400).send(e);
   });
-
-});
+})
 
 
 /**
@@ -401,22 +462,29 @@ app.post('/users/login', (req, res) => {
  * Purpose: generates and returns an access token
  */
 app.get('/users/me/access-token', verifySession, (req, res) => {
-  // we know that the user is authenticated and we have the user_id and userObject available to us
+  // we know that the user/caller is authenticated and we have the user_id and user object available to us
   req.userObject.generateAccessAuthToken().then((accessToken) => {
     res.header('x-access-token', accessToken).send({
       accessToken
     });
   }).catch((e) => {
+    console.log('e from me/access-token', e);
     res.status(400).send(e);
   });
-})
-
+});
 
 
 /**
- * HELPER METHODS
- *  */
+ * POST / users / ip / address
+ * Purpose: generates and returns an access token
+ */
+app.post('/users/ip/address', function (req, res) {
+  // access to IP address here
+});
 
+
+
+/* HELPER METHODS */
 let deleteTasksFromList = (_listId) => {
   Task.deleteMany({
     _listId
@@ -427,8 +495,7 @@ let deleteTasksFromList = (_listId) => {
 
 
 
-// Serve App
 
 app.listen(3000, () => {
   console.log("Server is listening on port 3000");
-});
+})
